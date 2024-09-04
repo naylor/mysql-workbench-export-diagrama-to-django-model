@@ -13,7 +13,7 @@ MySQL Workbench Plugin to export the diagram to a Django model
 ### Generate documentation from ERR digram
 
 * Open the ERR digram
-* Navigate to menu **Tools** > **Utilities** > **Generate Exporto to Django Model**
+* Navigate to menu **Tools** > **Utilities** > **Generate Export to Django Model**
 * When you see the status bar text changed to *Documentation generated into the clipboard. Paste it to your editor.*, Paste (<kbd>Ctrl</kbd> + <kbd>V</kbd> in most Linux/Window applications) to your editor and save as a new file.
 
 ### Generate ERR digram from physical database
