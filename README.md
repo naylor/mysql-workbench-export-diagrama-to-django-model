@@ -16,6 +16,8 @@ MySQL Workbench Plugin to export the diagram to a Django model
 * Navigate to menu **Tools** > **Utilities** > **Generate Export to Django Model**
 * When you see the status bar text changed to *Documentation generated into the clipboard. Paste it to your editor.*, Paste (<kbd>Ctrl</kbd> + <kbd>V</kbd> in most Linux/Window applications) to your editor and save as a new file.
 
+[![Watch the video](https://img.youtube.com/vi/rC__i9Gr0OE/hqdefault.jpg)](https://youtu.be/rC__i9Gr0OE)
+
 ### Generate ERR digram from physical database
 
 In case that you do not have the ERR diagram, you have to create a diagram from your physical database first. Don't worry, MySQL Workbench has a greate tool to do this for you called **Reverse Engineer**.
