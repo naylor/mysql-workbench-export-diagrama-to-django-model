@@ -1,11 +1,14 @@
 # MySQL Workbench Plugin
 # <description>
 # Written in MySQL Workbench 8.0.36
+# Author: Naylor Garcia Bachiega
+# https://github.com/naylor
 
 from wb import *
 import grt
 import mforms
 import re
+import unicodedata
 
 ModuleInfo = DefineModule("djangoModel", author="Bachiega, Naylor G.", version="1.0.0", description="Generate Export to Django Model")
 
@@ -15,127 +18,126 @@ ModuleInfo = DefineModule("djangoModel", author="Bachiega, Naylor G.", version="
 
 def djangoModel(diagram):
     newline = "\n"
-    separator = ":"
-    tab = "    "
     yml = ""
-    obj_count = 0
     tables = []
-    
-    # Itera sobre os esquemas na categoria
+
     for figure in diagram.figures:
-    
         table = TableSkeleton()
-        # Itera sobre as colunas na tabela
+        col_count = 0
+        M2M = 0
+        uniqueReferences = []
+
         for column in figure.table.columns:
-            print("djangoModel: for column")
-            obj_count += 1
-
             current_column = ColumnSkeleton()
-            current_column.name = column.name
-            current_column.orig_name = column.name
-            current_column.type = simple_type_to_django_field_type(column.simpleType)
-            current_column.obj_count = obj_count
+            current_column.name = convergeName(column.name)
+            current_column.orig_name = convergeName(column.name)
+            current_column.type = djangoTypes(column.simpleType)
 
-            # Tamanho
-            current_column.length = 0 if column.length == -1 else column.length
-
-            # Precisão
-            current_column.precision = 0 if column.precision == -1 else column.precision
-
-            # Escala
-            current_column.scale = 0 if column.scale == -1 else column.scale
-
-            # Obrigatório (not null)
+            # Assignments with default values
+            current_column.length = max(0, column.length)
+            current_column.precision = max(0, column.precision)
+            current_column.scale = max(0, column.scale)
             current_column.required = column.isNotNull == 1
+            current_column.autoIncrement = column.autoIncrement == 1
 
-            # Auto-incremento
-            current_column.auto_increment = column.autoIncrement == 1
-
-            # Valor padrão
+            # Set default value
             if column.defaultValue:
-                if "'" in column.defaultValue:
-                    current_column.default = column.defaultValue[1:-1]
-                else:
-                    current_column.default = column.defaultValue
+                current_column.default = column.defaultValue.strip("'")
 
-            # Chave primária
-            if figure.table.indices:
-                for index in figure.table.indices:
-                    if index.indexType == "PRIMARY":
-                        for index_column in index.columns:
-                            if index_column.referencedColumn and index_column.referencedColumn.name == column.name:
-                                current_column.primaryKey = True
+            # Primary key
+            if any(index.indexType == "PRIMARY" and any(ic.referencedColumn and ic.referencedColumn.name == column.name for ic in index.columns)
+                   for index in figure.table.indices):
+                current_column.primaryKey = True
 
-            # Chave estrangeira
-            if len(figure.table.foreignKeys) > 0:
-                for foreignKey in figure.table.foreignKeys:
-                    foreignKeyColumn = foreignKey.columns[0]
-                    foreignKeyReferencedColumn = foreignKey.referencedColumns[0]
+            # Foreign key
+            for foreignKey in figure.table.foreignKeys:
+                foreignKeyColumn = foreignKey.columns[0]
+                foreignKeyReferencedColumn = foreignKey.referencedColumns[0]
 
-                    if foreignKeyColumn.name == column.name:
-                        if foreignKey.referencedTable is not None:
-                            current_column.foreignTable = foreignKey.referencedTable.name
-                            current_column.foreignReference = foreignKeyReferencedColumn.name
-                            if current_column.name.endswith("_id"):
-                                current_column.name = current_column.name[:-3]
+                if foreignKeyColumn.name == column.name:
+                    current_column.foreignTable = convergeName(foreignKey.referencedTable.name)
+                    current_column.foreignReference = convergeName(foreignKeyReferencedColumn.name)
 
-                        if foreignKey.deleteRule == "SET NULL":
-                            current_column.onDelete = "SET_NULL"
-                        elif foreignKey.deleteRule == "CASCADE":
-                            current_column.onDelete = "CASCADE"
-                        elif foreignKey.deleteRule == "NO ACTION" or foreignKey.deleteRule == "RESTRICT":
-                            current_column.onDelete = "RESTRICT"
+                    if current_column.primaryKey and foreignKey.many != 1:
+                        current_column.oneToOne = True
 
-            # Índices
-            if figure.table.indices:
-                for index in figure.table.indices:
-                    if index.indexType == "INDEX" and index.name == column.name:
+                    current_column.onDelete = {
+                        "SET NULL": "SET_NULL",
+                        "CASCADE": "CASCADE",
+                        "NO ACTION": "RESTRICT",
+                        "RESTRICT": "RESTRICT"
+                    }.get(foreignKey.deleteRule, "RESTRICT")
+
+                    if foreignKey.many == 1:
+                        M2M = 1
+                        uniqueReferences.append(convergeName(column.name))
+
+            col_count += 1
+
+            # Indexes
+            for index in figure.table.indices:
+                if index.name == column.name:
+                    if index.indexType == "INDEX":
                         current_column.index = True
-                    if index.indexType == "UNIQUE" and index.name == column.name:
+                    if index.indexType == "UNIQUE":
                         current_column.unique = True
 
-            current_column.row_table_name = figure.table.name
-            print("row_table_name: " + current_column.row_table_name)
+            # Setting the second field as self in the model
+            # The first one was not added to avoid using the ID
+            if col_count == 2:
+                table.addSelf = convergeName(column.name)
 
-            # Many to Many
-            if "_has_" in figure.table.name:
-                current_column['manyToMany'] = convert_table_to_class_name(figure.table.name)
-                current_column['foreignReference'] = None
-                table_name = figure.table.name.split("_has_")[0]
-                table.name = convert_table_to_class_name(figure.table_name)
-                table.columns.append(current_column)
-            else:
-                table.name = convert_table_to_class_name(figure.table.name)
-                table.columns.append(current_column)
-                # yml += tab + current_column['name'] + " = models." + current_column.get_field_str() + newline
+            table.name = convergeName(figure.table.name)
+            current_column.obj_count = col_count
+            table.M2M = M2M
+            table.uniqueReferences = uniqueReferences
+            table.columns.append(current_column)
 
-            print(current_column)    
-        
         tables.append(table)
 
+    # Django Model generation
+    yml = (
+        "#Model generated by the Generate Export to Django Model Plugin\n"
+        "#Created by Naylor Garcia Bachiega\n"
+        "#https://github.com/naylor\n\n"
+        "from django.db import models\n\n"
+    )
 
-    # Monta o Django Model
-    yml = "Model generated by the Generate Export to Django Model Plugin" + newline
-    yml += "Created by Naylor Garcia Bachiega" + newline
-    yml += "https://github.com/naylor" + newline + newline
-    yml += "from django.db import models" + newline + newline
-    #tables = sort_table_array(tables)
+    # Sorts to process tables without relationships first
+    tables = reorderTables(tables)
     for table in tables:
-        print(table)
-        print(table.name)
-        yml += convert_to_django_model(table)
+        yml += table.makeDjangoModel()
 
     mforms.Utilities.set_clipboard_text(yml)
     mforms.App.get().set_status_text("Documentation generated into the clipboard. Paste it to your editor.")
 
-    print("Documentation is copied to the clipboard.")
     return 0
 
 
 class TableSkeleton:
     def __init__(self):
-        self.name = None, 
+        self.name = None,
+        self.addSelf = None
         self.columns = []
+        self.M2M = 0
+        self.uniqueReferences = []
+
+    def makeDjangoModel(self):
+        newline = "\n"
+        tab = "    "
+        yml = ""
+
+        # Convert table name to Django model class name
+        yml += f"class {self.name}(models.Model):" + newline
+
+        for column in self.columns:
+            field_str = column.getDjangoStrings(self)
+            if field_str:
+                yml += tab + field_str + newline
+        
+        yml = yml + newline
+        return yml
+
 
 class ColumnSkeleton:
     def __init__(self):
@@ -150,6 +152,7 @@ class ColumnSkeleton:
         self.default = None
         self.sequence = None
         self.index = False
+        self.oneToOne = False
         self.foreignTable = None
         self.foreignReference = None
         self.onDelete = None
@@ -157,174 +160,157 @@ class ColumnSkeleton:
         self.precision = 0
         self.scale = 0
         self.unique = False
-        self.manyToMany = None
-        self.row_table_name = None
 
-    # Adicione outros métodos aqui, se necessário
+    def getDjangoStrings(self, table):
+        sep = ", "
+        newline = "\n"
+        tab = "    "
+        yml = f"{self.name} = models."
 
+        # Adds ForeignKey or OneToOneField
+        yml += self._build_fk_field(sep)
 
-def convert_to_django_model(table):
-    newline = "\n"
-    tab = "    "
-    yml = ""
+        # Finalizes FK if applicable
+        if self.foreignTable is not None:
+            yml = yml.rstrip(sep) + ")"
+            yml += self._add_meta_and_str_method(table, newline, tab)
+            return yml
 
-    # Convert table name to Django model class name
-    yml += f"class {convert_table_to_class_name(table.name)}(models.Model):" + newline
+        # Adds common field parameters
+        yml += self._build_common_fields(sep)
+        yml = yml.rstrip(sep) + ")"
 
-    for column in table.columns:
-        field_str = get_field_str(column)
-        if field_str:
-            yml += tab + field_str + newline
-    
-    yml = yml + newline
-    return yml
+        # Adds __str__ and Unique Together
+        yml += self._add_meta_and_str_method(table, newline, tab)
 
-
-def get_field_str(column):
-    sep = ", "
-    yml = f"{column.name} = models."
-
-    if column.manyToMany is not None:
-        print("GET 0")
-        print(column.row_table_name)
-        table_name_first = column.row_table_name.split("_has_")[0]
-        table_name_last = column.row_table_name.split("_has_")[1]
-        print("GET 1")
-
-        if convert_table_to_class_name(column.name) != convert_table_to_class_name(table_name_first):
-            yml = f"{column.name}s = models.ManyToManyField({convert_table_to_class_name(table_name_last)}"
-            yml += f"{sep}db_table='{column.manyToMany}'{sep}"
-        else:
-            return ""
-
-    elif column.foreignTable is not None:
-        yml += f"ForeignKey('{convert_table_to_class_name(column.foreignTable)}'{sep}"
-
-    if column.foreignReference is not None:
-        yml += f"to_field='{column.foreignReference}'{sep}"
-        yml += f"related_name='{column.orig_name}_{column.obj_count}'{sep}"
-
-    if column.onDelete is not None:
-        yml += f"on_delete=models.{column.onDelete}{sep}"
-
-    if column.foreignTable is not None:
-        yml = yml.rstrip(sep)
-        yml += ")"
         return yml
 
-    print("OK")
+    def _build_fk_field(self, sep):
+        FK = "OneToOneField" if self.oneToOne else "ForeignKey"
+        yml = ""
 
-    if column.autoIncrement:
-        print("OK1")
-        column.type = "AutoField"
+        if self.foreignTable:
+            yml += f"{FK}('{self.foreignTable}'"
 
-    yml += f"{column.type}("
+            if self.foreignReference:
+                yml += f", to_field='{self.foreignReference}'"
 
-    if column.length != 0:
-        yml += f"max_length={column.length}{sep}"
+            if self.onDelete:
+                yml += f", on_delete=models.{self.onDelete}"
+                if self.onDelete == "SET_NULL":
+                    yml += ", null=True"
 
-    if not column.required:
-        yml += f"blank=True{sep}"
+            yml += sep
 
-    if column.precision != 0:
-        yml += f"max_digits={column.precision}{sep}"
+        return yml
 
-    if column.scale != 0:
-        yml += f"decimal_places={column.scale}{sep}"
+    def _build_common_fields(self, sep):
+        if self.autoIncrement:
+            self.type = "AutoField"
 
-    if column.primaryKey:
-        yml += f"primary_key=True{sep}"
+        yml = f"{self.type}("
 
-    if column.default is not None and column.default != "NULL":
-        yml += f"default='{column.default}'{sep}"
+        if self.length:
+            yml += f"max_length={self.length}{sep}"
 
-    if column.index:
-        yml += f"db_index=True{sep}"
+        if not self.required:
+            yml += f"blank=True{sep}"
 
-    if column.unique:
-        yml += f"unique=True{sep}"
+        if self.precision:
+            yml += f"decimal_places={self.precision}{sep}"
+            if self.type == "DecimalField":
+                self.scale = 10
 
-    if column.type == "DateTimeField" and column.name == "created_at":
-        yml += f"auto_now_add=True{sep}"
+        if self.scale:
+            yml += f"max_digits={self.scale}{sep}"
 
-    if column.type == "DateTimeField" and column.name == "updated_at":
-        yml += f"auto_now=True{sep}"
+        if self.primaryKey:
+            yml += f"primary_key=True{sep}"
 
-    if not yml.endswith('('):
-        yml = yml.rstrip(sep)
+        if self.default and self.default != "NULL":
+            yml += f"default='{self.default}'{sep}"
 
-    yml += ")"
+        if self.index:
+            yml += f"db_index=True{sep}"
 
-    return yml
+        if self.unique:
+            yml += f"unique=True{sep}"
 
-def sort_table_array(tables):
-    sorted_tables = []
+        if self.type == "DateTimeField":
+            if self.name == "created_at":
+                yml += f"auto_now_add=True{sep}"
+            elif self.name == "updated_at":
+                yml += f"auto_now=True{sep}"
 
-    # Primeiro, adiciona as tabelas que não possuem campos ManyToMany
-    for table in tables:
-        mToN = False
-        for column in table.columns:
-            if hasattr(column, "manyToMany"):
-                mToN = True
+        return yml
 
-        if mToN == False:
-            sorted_tables.append(table)
+    def _add_meta_and_str_method(self, table, newline, tab):
+        yml = ""
 
-    # Em seguida, adiciona as tabelas que possuem campos ManyToMany
-    for table in tables:
-        mToN = False
-        for column in table.columns:
-            if hasattr(column, "manyToMany"):
-                mToN = True
+        # Adds the __str__ method if applicable
+        if self.obj_count == len(table.columns) and table.addSelf:
+            yml += newline * 2 + tab + "def __str__(self):" + newline
+            yml += tab * 2 + f'return f"{{self.{table.addSelf}}}"'
 
-        if mToN == True:
-            sorted_tables.append(table)
+        # Adds Unique Together for ManyToMany relationships
+        if table.M2M and self.obj_count == len(table.columns):
+            yml += newline * 2 + tab + "class Meta:" + newline
+            yml += tab * 2 + "unique_together = (("
+            yml += ", ".join(f"'{ref}'" for ref in table.uniqueReferences) + "),)"
 
-    return sorted_tables
+        return yml
 
 
-def convert_table_to_class_name(s):
-    s = s.capitalize()  # Converte o primeiro caractere para maiúsculo
-    s = ''.join(word.capitalize() if word else '_' for word in s.split('_'))  # Converte caracteres após '_' para maiúsculo
-    return s.replace('_', '')  # Remove os '_'
 
-def trim(s):
-    return s.strip()  # Remove espaços em branco do início e do final
+def reorderTables(tables):
+    # Using list comprehensions to filter and sort tables
+    no_m2m_tables = [table for table in tables if table.M2M == 0]
+    m2m_tables = [table for table in tables if table.M2M == 1]
 
-def string_starts(s, start):
-    return s.startswith(start)  # Verifica se a string começa com o prefixo especificado
+    # Merges the sorted lists
+    return no_m2m_tables + m2m_tables
 
-def string_ends(s, end):
-    return s.endswith(end)  # Verifica se a string termina com o sufixo especificado
 
-def strpos(haystack, needle, offset=0):
-    pos = haystack.find(needle, offset)  # Encontra a posição da primeira ocorrência da substring
-    return pos if pos != -1 else None
+def convergeName(s):
+    # Removes accents and Latin characters
+    s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('ASCII')
+    
+    # Keeps only alphanumeric characters and the separators _ and .
+    s = re.sub(r'[^a-zA-Z0-9._]', '', s).lower()
+    
+    # Capitalizes the initial letter after _ or .
+    s = re.sub(r'[_\.](\w)', lambda match: match.group(1).upper(), s)
+    
+    # Removes remaining dashes and periods
+    s = s.replace('_', '').replace('.', '')
+    
+    return s
 
-def simple_type_to_django_field_type(simple_type):
-    if simple_type is not None:
-        django_type = "NOT_MATCHED"
-        if simple_type.name == "INT":
-            django_type = "IntegerField"
-        elif simple_type.name == "BIGINT":
-            django_type = "BigIntegerField"
-        elif simple_type.name == "DECIMAL":
-            django_type = "DecimalField"
-        elif simple_type.name in ["DATETIME", "TIMESTAMP"]:
-            django_type = "DateTimeField"
-        elif simple_type.name == "DATE":
-            django_type = "DateField"
-        elif simple_type.name == "TIME":
-            django_type = "TimeField"
-        elif simple_type.name in ["BOOL", "TINYINT"]:
-            django_type = "BooleanField"
-        elif simple_type.name in ["FLOAT", "DOUBLE"]:
-            django_type = "FloatField"
-        elif simple_type.name in ["TINYTEXT", "VARCHAR", "CHAR"]:
-            django_type = "CharField"
-        elif simple_type.name in ["TEXT", "MEDIUMTEXT", "LONGTEXT"]:
-            django_type = "TextField"
 
-        return django_type
-    else:
+def djangoTypes(columnType):
+    if columnType is None:
         return "UNKNOWN"
+
+    type_mapping = {
+        "INT": "IntegerField",
+        "MEDIUMINT": "IntegerField",
+        "TINYINT": "IntegerField",
+        "SMALLINT": "SmallIntegerField",
+        "BIGINT": "BigIntegerField",
+        "DECIMAL": "DecimalField",
+        "DATETIME": "DateTimeField",
+        "TIMESTAMP": "DateTimeField",
+        "DATE": "DateField",
+        "TIME": "TimeField",
+        "BOOL": "BooleanField",
+        "FLOAT": "FloatField",
+        "DOUBLE": "FloatField",
+        "TINYTEXT": "CharField",
+        "VARCHAR": "CharField",
+        "CHAR": "CharField",
+        "TEXT": "TextField",
+        "MEDIUMTEXT": "TextField",
+        "LONGTEXT": "TextField"
+    }
+
+    return type_mapping.get(columnType.name, "NOT_FOUND")
