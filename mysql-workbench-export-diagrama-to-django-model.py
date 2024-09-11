@@ -227,7 +227,7 @@ class ColumnSkeleton:
         if self.primaryKey:
             yml += f"primary_key=True{sep}"
 
-        if self.default and self.default != "NULL":
+        if self.default and self.default != "NULL" and self.default != "now()":
             yml += f"default='{self.default}'{sep}"
 
         if self.index:
@@ -240,6 +240,9 @@ class ColumnSkeleton:
             if self.name == "created_at":
                 yml += f"auto_now_add=True{sep}"
             elif self.name == "updated_at":
+                yml += f"auto_now=True{sep}"
+            
+        if self.default == "now()":
                 yml += f"auto_now=True{sep}"
 
         return yml
